@@ -1,0 +1,5 @@
+xarray
+numpy
+pandas
+tqdm
+cupy; extra == "gpu"
