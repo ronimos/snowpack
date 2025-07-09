@@ -58,22 +58,71 @@ from snowpack_reader import SnowpackProfile
 reader = SnowpackProfile('path/to/your/file.pro')
 
 # Print basic info
-print(reader)
+print(f"\n{str(reader)}\n")
 
-# Extract a single profile to a pandas DataFrame
-df = reader.profile_to_dataframe('2025-02-15 12:00:00')
-print(df)
+# --- Example 1: Get a summary for a specific date range ---
+print("--- Example 1: Getting summary for February 2025 ---")
+feb_profile = reader.slice(start_date='2025-02-01', end_date='2025-02-28')
 
-# Get daily summary statistics
-summary = reader.get_profile_summary(
-    parameters_to_calculate={
-        'rc_flat-min': ('rc_flat', 'min'),
-        'density-weighted_mean': ('density', 'weighted_mean')
-    },
-    start_date='2025-02-01',
-    end_date='2025-02-28'
+summary_df = feb_profile.get_profile_summary(
+    parameters_to_calculate={'height-max': ('height', 'max')}
 )
-print(summary)
+print("Max snow height for each day in February:")
+print(summary_df.head())
+
+# --- Example 2: Find layers by criteria in the sliced data ---
+print("\n--- Example 2: Finding weak layers in February 2025 ---")
+weak_layer_criteria = {
+    'depth': '30 to 100',
+    'rc_flat': '< 0.2',
+    'density': '< 200',
+}
+found_layers_df = feb_profile.find_layer_by_criteria(criteria=weak_layer_criteria)
+
+if not found_layers_df.empty:
+    print("Found layers matching criteria in February:")
+    print(found_layers_df)
+else:
+    logger.info("No layers found matching criteria in February.")
+
+# --- Example 3: Chained analysis to find slab properties above a weak layer ---
+print("\n--- Example 3: Chained analysis for slab properties ---")
+
+# First, get the location of the weakest layer for each day in our sliced profile
+weak_layer_locations = feb_profile.get_profile_summary(
+    parameters_to_calculate={'rc_flat-min': ('rc_flat', 'min')}
+)
+weak_layer_locations.rename(columns={'rc_flat-min-height': 'weak_layer_height'}, inplace=True)
+
+slab_analysis_results = []
+# Iterate through each day where a weak layer was found
+for date, row in tqdm(weak_layer_locations.iterrows(), total=weak_layer_locations.shape[0], desc="Analyzing Slabs"):
+    weak_layer_height = row['weak_layer_height']
+    if pd.isna(weak_layer_height):
+        continue
+    
+    # For each day, get a profile for that single day to analyze the slab
+    single_day_profile = reader.slice(start_date=date, end_date=date)
+    
+    slab_summary = single_day_profile.get_profile_summary(
+        from_height=weak_layer_height,
+        above_or_below='above',
+        parameters_to_calculate={
+            'slab_density_weighted_mean': ('density', 'weighted_mean'),
+            'slab_log_hardness_mean': lambda df: (2**df['hand_hardness'] * df['thickness']).mean() if not df.empty and 'hand_hardness' in df else None
+        }
+    )
+    if not slab_summary.empty:
+        slab_analysis_results.append(slab_summary)
+
+if slab_analysis_results:
+    slab_df = pd.concat(slab_analysis_results)
+    final_df = weak_layer_locations.join(slab_df, how='inner')
+    print("\nCombined Daily Weak Layer and Slab Analysis for February:")
+    print(final_df.head())
+else:
+    print("\nCould not perform slab analysis.")
+
 ```
 
 ---
