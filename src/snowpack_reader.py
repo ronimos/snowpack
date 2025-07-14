@@ -361,18 +361,35 @@ class SnowpackProfile:
 
 
     def slice(self, start_date: Optional[str] = None, end_date: Optional[str] = None) -> 'SnowpackProfile':
-        """Creates a new SnowpackProfile object containing a slice of the data."""
-        if self.data is None: return self
-        try:
-            sliced_data = self.data.sel(timestamp=slice(start_date, end_date))
-            new_profile = SnowpackProfile(self.filename, _load_data=False)
-            new_profile.data = sliced_data
-            new_profile.metadata = self.metadata
-            return new_profile
-        except Exception:
-            new_profile = SnowpackProfile(self.filename, _load_data=False)
-            new_profile.metadata = self.metadata
-            return new_profile
+        """
+        Creates a new SnowpackProfile object containing a slice of the data.
+        This version uses boolean masking after normalizing dates to midnight
+        to ensure robust slicing across different data sources.
+        """
+        if self.data is None or self.data.timestamp.size == 0:
+            return self
+
+        # Normalize the dataset's timestamps to midnight for a clean date comparison
+        timestamps = pd.to_datetime(self.data.timestamp.values).normalize()
+        
+        # Create boolean masks, normalizing the boundary dates as well
+        start_mask = timestamps >= pd.to_datetime(start_date).normalize() if start_date else True
+        end_mask = timestamps <= pd.to_datetime(end_date).normalize() if end_date else True
+
+        combined_mask = start_mask & end_mask
+        
+        if not np.any(combined_mask):
+            logger.warning(f"No data found in the date range {start_date} to {end_date} for file {self.filename}")
+            sliced_data = self.data.isel(timestamp=slice(0, 0)) # Create an empty slice
+        else:
+            # Use the boolean mask to select the data using isel
+            sliced_data = self.data.isel(timestamp=np.where(combined_mask)[0])
+
+        new_profile = SnowpackProfile(self.filename, _load_data=False)
+        new_profile.data = sliced_data
+        new_profile.metadata = self.metadata
+        
+        return new_profile
 
     def save_as_netcdf(self, output_path: str):
         """
@@ -387,19 +404,28 @@ class SnowpackProfile:
             try:
                 Path(output_path).parent.mkdir(parents=True, exist_ok=True)
                 
-                # If data is on GPU, it must be converted to NumPy before saving
+                data_to_save = self.data
                 if GPU_AVAILABLE:
-                    data_to_save = self.data.as_numpy()
-                else:
-                    data_to_save = self.data
+                    cpu_data = xr.Dataset(attrs=self.data.attrs)
+                    for var_name, data_array in self.data.data_vars.items():
+                        cpu_data[var_name] = (data_array.dims, data_array.get())
+                    
+                    coords_dict = {}
+                    for coord_name, coord_val in self.data.coords.items():
+                        if hasattr(coord_val.data, 'get'):
+                             coords_dict[coord_name] = (coord_val.dims, coord_val.data.get())
+                        else:
+                             coords_dict[coord_name] = coord_val
+                    cpu_data = cpu_data.assign_coords(coords_dict)
+                    data_to_save = cpu_data
                 
                 data_to_save.to_netcdf(output_path)
                 logger.debug(f"Successfully saved profile to NetCDF: {output_path}")
             except Exception as e:
-                logger.error(f"Failed to save NetCDF file to {output_path}: {e}")
+                logger.error(f"Failed to save NetCDF file to {output_path}: {e}", exc_info=True)
         else:
             logger.warning(f"No data to save for NetCDF file: {output_path}")
-
+    
     def get_profile_summary(
         self,
         parameters_to_calculate: Dict[str, Any],
@@ -675,7 +701,6 @@ class SnowpackProfile:
             return pd.DataFrame()
         
         return pd.DataFrame(results_list).set_index('date')
-
 
 def read_snowpack(pro_file_path: str) -> Optional[SnowpackProfile]:
     """
