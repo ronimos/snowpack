@@ -11,7 +11,7 @@ The core of this work involves shifting from a file-centric paradigm to a data-c
 To facilitate a modular and maintainable codebase, the functionality of the original `snowpack_reader.py` will be broken down into a structured package. This approach separates concerns, making the project easier to develop, test, and extend.
 
 ```
-snowpack_array/
+xsnow/
 ├── __init__.py
 ├── dataset.py          # Defines the core SnowProfileDataset class.
 ├── io.py               # Contains all file parsers (read_pro, read_smet) and writers (to_pro).
