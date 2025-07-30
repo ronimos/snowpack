@@ -92,19 +92,26 @@ The hardcoded `PARAM_CODES` dictionary in `snowpack_reader.py` must be replaced 
 
 ### 3.3. Implementing `to_*()` Write Methods
 
-To enable interoperability, the `SnowProfileDataset` class will include methods for exporting data into various formats, as specified in the development plan.
+To enable interoperability, the `SnowProfileDataset` class will include methods for exporting data into various formats.
 
 **Required Work:**
 
-1.  **Implement `.to_netcdf()`:** This method will be the primary way to save the internal data structure. It will be a thin wrapper around `xarray`'s native `.to_netcdf()` functionality. The implementation will reuse the logic from the existing `save_as_netcdf` method, ensuring that data is correctly converted from GPU (CuPy) to CPU (NumPy) arrays before writing.
-2.  **Implement `.to_pro()` and `.to_smet()`:** These methods will be more complex as they require converting the multi-dimensional `xarray.Dataset` back into a text-based format. The work involves:
-    * **Iteration:** The methods must iterate through each individual profile within the dataset (i.e., for each unique combination of `location`, `time`, `slope`, and `realization`).
-    * **Data Formatting:** For each profile, the data for each variable must be formatted back into the specific string format required by the `.pro` and `.smet` files, including parameter codes and comma-separated values.
-    * **File Handling:** As the dataset can contain many profiles, these methods must accept a directory path as an argument. They will be responsible for creating a logical file-naming convention and writing each profile to a separate file within the specified directory.
+1.  **Implement `.to_netcdf()` and `.to_zarr()`:** The package will support both NetCDF (for single-file portability) and Zarr (for cloud-native, parallel I/O). These methods will be thin wrappers around `xarray`'s native functionality, ensuring data is correctly converted from GPU to CPU arrays before writing.
+2.  **Implement `.to_pro()` and `.to_smet()`:** These methods will convert the multi-dimensional `xarray.Dataset` back into a text-based format. This requires iterating through each profile, formatting the data back to the required string format, and writing each profile to a separate file within a user-specified directory.
+
+### 3.4. Performance Optimizations for I/O
+
+For operational use cases, the I/O functions will include performance-enhancing features.
+
+**Required Work:**
+
+1.  **Incremental Reading of Appended Files:** The `read_pro()` function will support a `datetime_start` argument. When provided, the parser will efficiently scan the file and only perform full, expensive parsing for records newer than the provided timestamp.
+2.  **Parallel Reading of Multiple Files:** The high-level `read()` wrapper will include a `parallel` boolean flag. When `True`, it will use a `ProcessPoolExecutor` to distribute the reading of multiple files across all available CPU cores.
+3.  **Parser Optimization with Cython:** To maximize ingestion speed, the most performance-critical loops within the `.pro` file parser will be identified and rewritten in Cython. This will compile the Python-like code into highly efficient C code, dramatically reducing the time it takes to parse raw text files.
 
 ## 4. Adapting Analysis and Utility Methods
 
-The existing high-level analysis methods in `snowpack_reader.py` are powerful but are built for a single-profile timeseries. They must be refactored to work with the new multi-dimensional data model.
+The existing high-level analysis methods will be refactored to work with the new multi-dimensional data model.
 
 ### 4.1. Updating Analysis Functions
 
@@ -112,43 +119,60 @@ The methods `get_profile_summary` and `find_layer_by_criteria` need to be adapte
 
 **Required Work:**
 
-1.  **Generalize Method Logic:** Rewrite these functions to operate on a multi-dimensional `SnowProfileDataset`. Instead of processing a single timeseries, they should use `xarray`'s `groupby()` or `apply_ufunc()` capabilities to perform the analysis for each profile (i.e., for each unique combination of `location`, `time`, `slope`, and `realization`).
+1.  **Generalize Method Logic:** Rewrite these functions to operate on a multi-dimensional `SnowProfileDataset`, using `xarray`'s `groupby()` or `apply_ufunc()` capabilities to perform the analysis for each profile.
 2.  **Preserve Vectorization:** The core logic within these functions should remain as vectorized as possible to leverage the performance benefits of `xarray` and NumPy/CuPy.
 
 ### 4.2. Vectorized Computations (`rc_flat`, `depth`)
 
-The existing vectorized calculations are a major strength of `snowpack_reader.py` and align well with the new model.
+The existing vectorized calculations are a major strength and align well with the new model.
 
 **Required Work:**
 
-1.  **Verify Broadcasting:** These methods (`_compute_and_add_depth`, `_compute_and_add_rc_flat_vectorized`) will require minimal changes. The primary task is to verify that `xarray` correctly broadcasts the calculations across the new `location`, `slope`, and `realization` dimensions. The use of the `xp` alias for NumPy/CuPy should be maintained.
+1.  **Verify Broadcasting:** These methods will require minimal changes. The primary task is to verify that `xarray` correctly broadcasts the calculations across the new dimensions.
 
 ### 4.3. Caching and NetCDF I/O
 
-The existing `.nc` caching mechanism is valuable and should be preserved.
+The existing `.nc` caching mechanism will be preserved and enhanced.
 
 **Required Work:**
 
-1.  **Adapt `save_as_netcdf`:** The existing `save_as_netcdf` method will now be a method of the new `SnowProfileDataset` class (e.g., `.to_netcdf()`). It will save the entire multi-dimensional dataset.
-2.  **Update `read_snowpack` (now `read_netcdf`):** The logic for checking for a cached `.nc` file will be moved into the new `read_netcdf()` function, as specified in the development plan.
+1.  **Adapt Caching Logic:** The logic for checking for a cached `.nc` file will be moved into the new `read_netcdf()` function.
+2.  **Implement Smart Caching of Derived Variables:** Analysis functions will be updated to check if a computationally expensive result (like `rc_flat`) already exists in the dataset before re-computing it. A method will be provided to save these derived variables back to the cached NetCDF or Zarr store, making them instantly available in future sessions.
 
 ### 4.4. Concatenating and Merging Datasets
 
-The development plan relies on native `xarray` functionality for combining datasets. The work required is primarily in the implementation of the high-level `read()` wrapper and in providing clear documentation.
+The package will rely on native `xarray` functionality for combining datasets.
 
 **Required Work:**
 
-1.  **Implement `xr.concat` in `read()` Wrapper:** The `read()` function must use `xr.concat` to combine the list of individual `xarray.Dataset` objects returned by the parsers into a single dataset. It needs to correctly handle concatenation along the `location` and `realization` dimensions.
-2.  **Document Merging Workflows:** Create tutorials that clearly demonstrate how to use `xr.merge`, `.update()`, and `.combine_first()` for common use cases, such as updating a forecast with nowcast data.
+1.  **Implement `xr.concat` in `read()` Wrapper:** The `read()` function must use `xr.concat` to combine the list of individual datasets into a single object.
+2.  **Document Merging Workflows:** Create tutorials demonstrating how to use `xr.merge`, `.update()`, and `.combine_first()` for common use cases.
 
 ### 4.5. Visualization Support
 
-While the package is not a dedicated visualization library, it must provide the necessary hooks and helpers to enable easy plotting, as specified in the plan.
+The package will provide helpers to enable easy plotting.
 
 **Required Work:**
 
-1.  **Develop a Profile Plotting Interface:** Create a method within the `SnowProfileDataset` class (e.g., `.plot.profile()`) that can take a single profile (a dataset subsetted to a single location, time, slope, and realization) and generate a stratigraphy plot using a library like NiViz or snowpat. This may involve writing a converter to translate the `xarray.Dataset` slice into the format expected by the plotting library.
-2.  **Implement 2D Map Reshaping:** Create a helper function or method that can reshape scalar data variables (e.g., snow depth) from the 1D `location` dimension into a 2D grid for map-based plotting. This function will need to handle both regular grids and irregular meshes (requiring a user-provided geometry file).
+1.  **Develop a Profile Plotting Interface:** Create a method (e.g., `.plot.profile()`) to generate a stratigraphy plot for a single profile using a library like NiViz or snowpat.
+2.  **Implement 2D Map Reshaping:** Create a helper function to reshape scalar data variables into a 2D grid for map-based plotting.
+
+### 4.6. Extensibility with a Plugin System
+
+To allow users to add their own custom analysis functions, an extension system will be implemented.
+
+**Required Work:**
+
+1.  **Create a Decorator-Based Registry:** Implement a decorator (e.g., `@xsnow.register_analysis`) that allows users to register their own functions.
+2.  **Provide an Execution Engine:** Create a method (e.g., `dataset.xsnow.run_analysis()`) that can discover and run these registered functions.
+
+### 4.7. Advanced Performance & Scalability
+
+For very large datasets that may not fit into memory, the package will integrate with Dask.
+
+**Required Work:**
+
+1.  **Enable Out-of-Memory Computation with Dask:** Dask will be added as an optional dependency. The `SnowProfileDataset` class and analysis functions will be designed to work with Dask-backed `xarray` objects. This will enable lazy, out-of-memory, and parallel computation for analysis tasks, allowing the package to scale to massive datasets.
 
 ## 5. Summary of Key Tasks
 
@@ -156,47 +180,40 @@ While the package is not a dedicated visualization library, it must provide the 
     * Create a new `SnowProfileDataset` class to wrap `xarray.Dataset`.
     * Restructure the output of all parsers to a `(location, time, slope, realization, layer)` dimensional model.
 2.  **Parser Refactoring:**
-    * Extract parsing logic into standalone `read_pro()` and `read_smet()` functions.
-    * Implement a high-level `read()` wrapper for multi-file and multi-format ingestion.
+    * Extract parsing logic into standalone `read_*()` functions.
+    * Implement a high-level `read()` wrapper with parallel processing capabilities.
     * Replace `PARAM_CODES` with a canonical variable name registry.
-    * Implement `to_*` methods for writing data to various formats.
+    * Implement `to_*` methods for writing data to various formats, including Zarr.
 3.  **Analysis Method Adaptation:**
-    * Rewrite `get_profile_summary` and `find_layer_by_criteria` to use `xarray.groupby()` on the new data model.
+    * Rewrite `get_profile_summary` and `find_layer_by_criteria` to use `xarray.groupby()`.
     * Verify that existing vectorized calculations broadcast correctly.
+    * Implement a decorator-based plugin system for custom analysis.
+    * Integrate Dask for out-of-memory and parallel analysis.
 4.  **New Feature Implementation:**
     * Add the `profile_status` data variable.
-    * Enrich the dataset with CF-compliant metadata for timezones and coordinate reference systems.
+    * Enrich the dataset with CF-compliant metadata.
     * Implement helpers and documentation for data manipulation and visualization.
 
 ## 6. Package Integrity and Testing
 
-To ensure the reliability and correctness of the refactored package, a comprehensive testing strategy must be implemented as outlined in the development plan.
+A comprehensive testing strategy will be implemented to ensure reliability.
 
 **Required Work:**
 
-1.  **Establish Test Infrastructure:** Create a `tests/` directory at the root of the project. This will contain subdirectories for unit tests, integration tests, and a `data/` directory for small, versioned sample files (`.pro`, `.smet`, etc.) used by the tests.
-2.  **Implement Unit Tests:** Write `pytest` unit tests for each core component, including:
-    * Each parser function (`read_pro`, `read_smet`).
-    * The canonical name registry logic.
-    * Key analysis methods, testing them with known inputs and expected outputs.
-3.  **Implement Integration Tests:** Create tests for workflows that involve multiple components, such as verifying that the high-level `read()` wrapper can correctly parse multiple file types and merge them into a valid `SnowProfileDataset`.
-4.  **Enable Doctests:** Add example code to the docstrings of all public-facing functions and methods. Enable `pytest`'s doctest module to ensure these examples are automatically tested and remain correct as the code evolves.
-5.  **Set Up Continuous Integration (CI):** Configure a CI pipeline (e.g., using GitLab CI or GitHub Actions) that automatically runs the full test suite (including doctests) on every commit and pull request. This will provide immediate feedback to developers and prevent regressions.
+1.  **Establish Test Infrastructure:** Create a `tests/` directory with subdirectories for unit tests, integration tests, and sample data.
+2.  **Implement Unit Tests:** Write `pytest` unit tests for each core component.
+3.  **Implement Integration Tests:** Create tests for workflows that involve multiple components.
+4.  **Enable Doctests:** Add example code to docstrings and enable `pytest`'s doctest module.
+5.  **Set Up Continuous Integration (CI):** Configure a CI pipeline to automatically run the full test suite.
 
 ## 7. Open Source and Community Engagement
 
-Beyond the technical implementation, several steps are required to prepare the package for an open-source release.
+Several steps are required to prepare the package for a successful open-source release.
 
 **Required Work:**
 
-1.  Choose an approved open source license (e.g., MIT, Apache 2.0, GPL).
-2.  **Add a `LICENSE` file:** file with the full license text.
-3.  **Create a `README.md` file:** with project description, usage, and contribution guidelines.
-4.  **Add copyright** and license headers to source files.
-5.  Host the code in a public repository (e.g., GitHub, GitLab).
-6.  Document installation and usage instructions clearly.
-7.  **Create a `CONTRIBUTING.md` file:** file for contribution guidelines.
-8.  **Add a `CODE_OF_CONDUCT.md`:** if applicable. [Contributor Covenant](https://www.contributor-covenant.org/) is a common and effective approach.
-9.  **Prepare for Publication:** To make the package easily installable via `pip`, the following steps are needed:
-    * Create a `pyproject.toml` file to define package metadata, dependencies, and build system configurations.
-    * Use standard Python packaging tools (like `build` and `twine`) to create distribution packages and upload them to the Python Package Index (PyPI).
+1.  **Add a `LICENSE` file:** A permissive license like **MIT** or **Apache 2.0** is recommended.
+2.  **Create a `README.md` file:** Explain what the package does, how to install it, and provide a quick-start example.
+3.  **Create a `CONTRIBUTING.md` file:** Guide potential contributors on how to set up a development environment and submit changes.
+4.  **Adopt a `CODE_OF_CONDUCT.md`:** Establish a welcoming community environment.
+5.  **Prepare for Publication:** Create a `pyproject.toml` file and use standard Python packaging tools to publish the package to the Python Package Index (PyPI).
