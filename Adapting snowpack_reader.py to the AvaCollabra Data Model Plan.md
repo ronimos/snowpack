@@ -2,7 +2,7 @@
 
 ## 1. Introduction:
 
-This document outlines the technical plan for refactoring the existing `snowpack_reader.py` script to align with the specifications detailed in the [`development_plan.md`](https://gitlab.com/avacollabra/postprocessing/py-base-initial-dump/-/blob/main/development_plan.md?ref_type=heads). The current reader is a high-performance, single-file parser that produces a time-series dataset for one location. The development plan specifies a more powerful, multi-dimensional data model designed for scalability and interoperability across different data sources (SNOWPACK, CROCUS, etc.).
+This document outlines the technical plan for refactoring the existing [`snowpack_reader.py`](https://github.com/ronimos/snowpack/blob/main/src/snowpack_reader.py) script to align with the specifications detailed in the [`development_plan.md`](https://gitlab.com/avacollabra/postprocessing/py-base-initial-dump/-/blob/main/development_plan.md?ref_type=heads). The current reader is a high-performance, single-file parser that produces a time-series dataset for one location. The development plan specifies a more powerful, multi-dimensional data model designed for scalability and interoperability across different data sources (SNOWPACK, CROCUS, etc.).
 
 The core of this work involves shifting from a file-centric paradigm to a data-centric one. This means evolving the reader from a tool that processes one file at a time into a comprehensive package that can manage and analyze gridded snow profile data from multiple locations, slopes, and model realizations simultaneously. This refactoring is essential for achieving the project's goals of scalability, collaborative development, and support for large-scale operational forecasting.
 
